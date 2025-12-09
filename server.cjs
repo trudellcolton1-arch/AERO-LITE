@@ -134,6 +134,10 @@ app.post("/api/ai-routing-sim", async (req, res) => {
             speed: "2–5 business days",
             notes:
               "Fallback route. Legacy bank wire with flat fees and FX margin on top.",
+            offRampLowUsd: null,
+            offRampMidUsd: null,
+            offRampHighUsd: null,
+            totalEstimatedCostUsd: bankFeeUsd,
           },
           {
             name: "Card-Based Remittance Service",
@@ -145,6 +149,10 @@ app.post("/api/ai-routing-sim", async (req, res) => {
             speed: "Minutes to a few hours",
             notes:
               "Fallback route. Typical remittance app with FX spread and service fees.",
+            offRampLowUsd: null,
+            offRampMidUsd: null,
+            offRampHighUsd: null,
+            totalEstimatedCostUsd: remitFeeUsd,
           },
           {
             name: "Centralized Crypto Exchange Transfer",
@@ -156,6 +164,10 @@ app.post("/api/ai-routing-sim", async (req, res) => {
             speed: "Minutes to a few hours",
             notes:
               "Fallback route. Exchange-based transfer including trading, spread, and withdrawal costs.",
+            offRampLowUsd: null,
+            offRampMidUsd: null,
+            offRampHighUsd: null,
+            totalEstimatedCostUsd: exFeeUsd,
           },
           {
             name: "Loadit Money Service (LMS Rail)",
@@ -167,6 +179,10 @@ app.post("/api/ai-routing-sim", async (req, res) => {
             speed: "Instant to ~1 hour",
             notes:
               "Recommended route – LMS takes cash or card in on the send side, routes value over the cheapest digital asset rails (often stablecoins) behind the scenes, and converts it back into local fiat for the receiver. The sender and receiver never touch a crypto wallet. LMS exposes that as a single ~0.20% platform fee (plus a small $0.50 buffer for transfers ≤ $100) and is designed to beat Western Union, MoneyGram, and exchanges on both cost and speed, while enabling in-store cash pickup or low-fee withdrawal where supported.",
+            offRampLowUsd: null,
+            offRampMidUsd: null,
+            offRampHighUsd: null,
+            totalEstimatedCostUsd: lmsFeeUsd,
           },
         ],
         summary:
@@ -177,8 +193,6 @@ app.post("/api/ai-routing-sim", async (req, res) => {
     const aiRoutes = Array.isArray(parsed.routes) ? parsed.routes : [];
 
     // --- Normalize AI routes (NON-Loadit only) ---
-    let hasP2P = false;
-
     const normalized = aiRoutes.slice(0, 6).map((r) => {
       let name = (r.name || "Unnamed route").toString();
       let type = (r.type || "other").toString();
@@ -188,6 +202,11 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       let notes = (r.notes || "").toString();
       let feeUsd = Math.max(0, Number(r.feeUsd) || 0);
       let feePercent = Number(r.feePercent) || 0;
+
+      // Off-ramp metric placeholders (for crypto rails)
+      let offRampLowUsd = null;
+      let offRampMidUsd = null;
+      let offRampHighUsd = null;
 
       if (feePercent < 0) feePercent = 0;
       if (feePercent > 25) feePercent = 25;
@@ -223,6 +242,42 @@ app.post("/api/ai-routing-sim", async (req, res) => {
         type = "remittance";
       }
 
+      // --- Exchange normalization (centralized crypto exchange) ---
+      if (lowerType === "exchange" || lowerName.includes("exchange")) {
+        let exPct = 1.0;
+        if (amount < 300) exPct = 1.5;
+        else if (amount > 10000) exPct = 0.8;
+
+        feeUsd = money((exPct / 100) * amount);
+        feePercent = money(exPct);
+        speed = "Minutes to a few hours";
+
+        // Model the TOTAL value lost on an exchange:
+        // trading fee + spreads + withdrawal + fiat payout.
+        const midOffRampUsd = feeUsd;
+        const lowOffRampUsd = money(midOffRampUsd * 0.7);
+        const highOffRampUsd = money(midOffRampUsd * 1.3);
+
+        offRampLowUsd = lowOffRampUsd;
+        offRampMidUsd = midOffRampUsd;
+        offRampHighUsd = highOffRampUsd;
+
+        notes =
+          `Centralized crypto exchange transfer. User converts into a crypto asset, sends between exchanges or regions, then converts back to fiat and withdraws. ` +
+          `On paper, headline trading fees can look low, but once you include spreads, withdrawal fees, and bank/fiat payout costs, the real money lost is higher. ` +
+          `For an amount around $${amount.toFixed(
+            2
+          )}, typical all-in exchange + off-ramp costs usually land in the ~$${lowOffRampUsd.toFixed(
+            2
+          )}–$${highOffRampUsd.toFixed(
+            2
+          )} range, with about $${midOffRampUsd.toFixed(
+            2
+          )} as a reasonable mid-point. ` +
+          `By contrast, LMS bundles the routing and off-ramp into a single ~0.20% platform fee, keeps users 100% in local fiat (no exchange accounts, no wallets), and is designed to beat these exchange flows on both cost and simplicity.`;
+        type = "exchange";
+      }
+
       // --- Stablecoin / on-chain crypto routes (USDC/USDT/etc) ---
       const looksStable =
         lowerName.includes("stable") ||
@@ -245,6 +300,10 @@ app.post("/api/ai-routing-sim", async (req, res) => {
         const lowWithdrawFeeUsd = money(midWithdrawFeeUsd * 0.7);
         const highWithdrawFeeUsd = money(midWithdrawFeeUsd * 1.3);
 
+        offRampLowUsd = lowWithdrawFeeUsd;
+        offRampMidUsd = midWithdrawFeeUsd;
+        offRampHighUsd = highWithdrawFeeUsd;
+
         notes =
           `On-chain stablecoin transfer (e.g., USDC or USDT). Technically fast and can look cheap for advanced crypto users who already manage wallets, gas fees, and off-ramps. ` +
           `But to turn stablecoins back into spendable cash, most people still have to use an exchange or off-ramp and pay separate withdrawal and payout fees. ` +
@@ -261,7 +320,7 @@ app.post("/api/ai-routing-sim", async (req, res) => {
         type = "exchange"; // treat it as an on-chain/exchange-style rail
       }
 
-      // --- P2P / OTC crypto routes ---
+      // --- P2P / OTC crypto routes from AI (we'll filter these out after) ---
       const looksP2P =
         lowerType === "p2p" ||
         lowerName.includes("p2p") ||
@@ -269,20 +328,25 @@ app.post("/api/ai-routing-sim", async (req, res) => {
         lowerName.includes("otc");
 
       if (looksP2P) {
-        hasP2P = true;
         if (!speed) speed = "Hours to 1 day";
 
-        // Rough model of P2P/OTC cash-out costs to get fiat.
         let p2pPct;
-        if (amount < 500) p2pPct = 3.0; // small P2P transfers get heavy spreads
+        if (amount < 500) p2pPct = 3.0;
         else if (amount < 5000) p2pPct = 2.0;
         else p2pPct = 1.2;
-        const fixedP2P = 8; // extra hassle / desk fee
+
+        const fixedP2P = 8;
         const midP2PFeeUsd = money((p2pPct / 100) * amount + fixedP2P);
         const lowP2PFeeUsd = money(midP2PFeeUsd * 0.7);
         const highP2PFeeUsd = money(midP2PFeeUsd * 1.3);
 
         name = "P2P / OTC Crypto Transfer";
+        type = "p2p";
+
+        offRampLowUsd = lowP2PFeeUsd;
+        offRampMidUsd = midP2PFeeUsd;
+        offRampHighUsd = highP2PFeeUsd;
+
         notes =
           `Peer-to-peer or OTC crypto transfer. On-chain fees themselves can be low, but most receivers still need to cash out through an OTC desk, reseller, or exchange to get usable fiat. ` +
           `That usually means spreads, desk markups, and withdrawal or bank deposit fees. ` +
@@ -296,9 +360,8 @@ app.post("/api/ai-routing-sim", async (req, res) => {
             2
           )} as a reasonable mid-point. ` +
           `Bottom line: the cheap % you see on raw crypto transfers does NOT include these off-ramp/cash-out costs. If the receiver needs local cash, doing it manually via P2P/OTC usually ends up more expensive, slower, and riskier than letting LMS route and off-ramp for ~0.20% all-in.`;
-        type = "p2p";
 
-        // Use the mid-point as the modeled fee for this route
+        // Use the mid-point as the modeled fee for this AI P2P route
         feeUsd = midP2PFeeUsd;
         feePercent = money((feeUsd / amount) * 100);
       }
@@ -306,6 +369,8 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       if (!speed) {
         speed = "Unknown – varies by provider";
       }
+
+      const hasOffRamp = offRampMidUsd != null;
 
       return {
         name,
@@ -316,8 +381,17 @@ app.post("/api/ai-routing-sim", async (req, res) => {
         feePercent: money(feePercent),
         speed,
         notes,
+        offRampLowUsd: hasOffRamp ? money(offRampLowUsd) : null,
+        offRampMidUsd: hasOffRamp ? money(offRampMidUsd) : null,
+        offRampHighUsd: hasOffRamp ? money(offRampHighUsd) : null,
+        totalEstimatedCostUsd: hasOffRamp
+          ? money(feeUsd + offRampMidUsd)
+          : money(feeUsd),
       };
     });
+
+    // Strip any AI-created P2P routes so we only show ONE clear P2P card
+    const normalizedNonP2P = normalized.filter((r) => r.type !== "p2p");
 
     // --- Synthetic Western Union + MoneyGram rails (legacy baselines) ---
     const wuPct = 7.0;
@@ -332,6 +406,10 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       speed: "Minutes to a few hours",
       notes:
         "Traditional money transfer provider with high FX margins and service fees, often around 6–12% all-in.",
+      offRampLowUsd: null,
+      offRampMidUsd: null,
+      offRampHighUsd: null,
+      totalEstimatedCostUsd: wuFeeUsd,
     };
 
     const mgPct = 6.0;
@@ -346,43 +424,49 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       speed: "Minutes to a few hours",
       notes:
         "Legacy remittance provider with card and cash pickup options, typically around 5–10% total cost.",
+      offRampLowUsd: null,
+      offRampMidUsd: null,
+      offRampHighUsd: null,
+      totalEstimatedCostUsd: mgFeeUsd,
     };
 
-    // --- Synthetic P2P / OTC rail if AI didn't give us one ---
-    let p2pRoute = null;
-    if (!hasP2P) {
-      let p2pPct;
-      if (amount < 500) p2pPct = 3.0;
-      else if (amount < 5000) p2pPct = 2.0;
-      else p2pPct = 1.2;
-      const fixedP2P = 8;
-      const midP2PFeeUsd = money((p2pPct / 100) * amount + fixedP2P);
-      const lowP2PFeeUsd = money(midP2PFeeUsd * 0.7);
-      const highP2PFeeUsd = money(midP2PFeeUsd * 1.3);
+    // --- Synthetic P2P / OTC rail (its own card, always present) ---
+    let p2pPct;
+    if (amount < 500) p2pPct = 3.0;
+    else if (amount < 5000) p2pPct = 2.0;
+    else p2pPct = 1.2;
 
-      p2pRoute = {
-        name: "P2P / OTC Crypto Transfer",
-        type: "p2p",
-        isLoadit: false,
-        isBest: false,
-        feeUsd: midP2PFeeUsd,
-        feePercent: money((midP2PFeeUsd / amount) * 100),
-        speed: "Hours to 1 day",
-        notes:
-          `Peer-to-peer or OTC crypto transfer. On-chain fees can look cheap, but most receivers still need to cash out through an OTC desk, reseller, or exchange to get usable fiat. ` +
-          `That usually means spreads, desk markups, and withdrawal or bank deposit fees. ` +
-          `For an amount around $${amount.toFixed(
-            2
-          )}, real-world cash-out costs for P2P/OTC typically fall in the ~$${lowP2PFeeUsd.toFixed(
-            2
-          )}–$${highP2PFeeUsd.toFixed(
-            2
-          )} range, with about $${midP2PFeeUsd.toFixed(
-            2
-          )} as a reasonable mid-point just to get back to fiat. ` +
-          `Bottom line: the cheap % you see on raw crypto transfers does NOT include these off-ramp/cash-out costs. For normal users who just want local cash, LMS's ~0.20% all-in fee is usually cheaper, simpler, and safer than DIY P2P/OTC.`,
-      };
-    }
+    const fixedP2P = 8;
+    const midP2PFeeUsd = money((p2pPct / 100) * amount + fixedP2P);
+    const lowP2PFeeUsd = money(midP2PFeeUsd * 0.7);
+    const highP2PFeeUsd = money(midP2PFeeUsd * 1.3);
+
+    const p2pRoute = {
+      name: "P2P / OTC Crypto Transfer",
+      type: "p2p",
+      isLoadit: false,
+      isBest: false,
+      feeUsd: midP2PFeeUsd,
+      feePercent: money((midP2PFeeUsd / amount) * 100),
+      speed: "Hours to 1 day",
+      notes:
+        `Peer-to-peer or OTC crypto transfer. On-chain fees can look cheap, but most receivers still need to cash out through an OTC desk, reseller, or exchange to get usable fiat. ` +
+        `That usually means spreads, desk markups, and withdrawal or bank deposit fees. ` +
+        `For an amount around $${amount.toFixed(
+          2
+        )}, real-world cash-out costs for P2P/OTC typically fall in the ~$${lowP2PFeeUsd.toFixed(
+          2
+        )}–$${highP2PFeeUsd.toFixed(
+          2
+        )} range, with about $${midP2PFeeUsd.toFixed(
+          2
+        )} as a reasonable mid-point just to get back to fiat. ` +
+        `Bottom line: the cheap % you see on crypto transfers does NOT include these off-ramp/cash-out costs. If the receiver needs local cash, doing it manually via P2P/OTC usually ends up more expensive, slower, and riskier than letting LMS route and off-ramp for ~0.20% all-in.`,
+      offRampLowUsd: lowP2PFeeUsd,
+      offRampMidUsd: midP2PFeeUsd,
+      offRampHighUsd: highP2PFeeUsd,
+      totalEstimatedCostUsd: money(midP2PFeeUsd + midP2PFeeUsd), // feeUsd is modeled as midP2PFeeUsd already, so fee + off-ramp ≈ 2x mid
+    };
 
     // --- LMS Rail (Loadit-only, 0.20% + $0.50 if ≤ $100) ---
     let lmsFeeUsd = money(amount * 0.002); // 0.20%
@@ -401,18 +485,25 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       speed: "Instant to ~1 hour",
       notes:
         "Recommended route – LMS takes cash or card from the sender, routes the value over the cheapest digital asset rails (often stablecoins) under the hood, and settles back into local fiat for the receiver. The sender and receiver stay 100% in fiat: no wallets, no seed phrases, no exchanges. LMS wraps this into a single ~0.20% platform fee (plus a small $0.50 buffer for transfers ≤ $100) and is designed to beat Western Union, MoneyGram, centralized exchanges, DIY stablecoin routes, and P2P/OTC once off-ramp/withdrawal and cash-out costs are included, while enabling in-store cash pickup or low-fee withdrawals where supported.",
+      offRampLowUsd: null,
+      offRampMidUsd: null,
+      offRampHighUsd: null,
+      totalEstimatedCostUsd: lmsFeeUsd, // all-in via AI routing
     };
 
-    const extraRoutes = [wuRoute, mgRoute];
-    if (p2pRoute) extraRoutes.push(p2pRoute);
-
-    const finalRoutes = [...normalized, ...extraRoutes, lmsRoute];
+    const finalRoutes = [
+      ...normalizedNonP2P,
+      wuRoute,
+      mgRoute,
+      p2pRoute,
+      lmsRoute,
+    ];
 
     return res.json({
       routes: finalRoutes,
       summary:
         parsed.summary ||
-        `AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the modern option that uses the cheapest digital-asset rails under the hood, but keeps the experience fiat-only on both sides with ~0.20% all-in platform fees (plus a small buffer on smaller transfers), and avoids the extra off-ramp/withdrawal and cash-out costs users would face with DIY stablecoin or P2P/OTC crypto routes.`,
+        `AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the modern option that uses the cheapest digital-asset rails under the hood, but keeps the experience fiat-only on both sides with ~0.20% all-in platform fees (plus a small buffer on smaller transfers), and avoids the extra off-ramp/withdrawal and cash-out costs users would face with DIY stablecoin, exchange, or P2P/OTC crypto routes.`,
     });
   } catch (err) {
     console.error("AI Routing Simulator (LMS-only) error:", err);
