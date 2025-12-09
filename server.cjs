@@ -63,19 +63,19 @@ app.post("/api/ai-routing-sim", async (req, res) => {
             "- In 'notes', mention any tradeoffs, including extra off-ramp, cash-out, or withdrawal costs when relevant (e.g., stablecoins, P2P, OTC).\n\n" +
             "Return STRICT JSON ONLY with this schema:\n" +
             "{\n" +
-            ' \"routes\": [\n' +
-            " {\n" +
-            ' \"name\": string,\n' +
-            ' \"type\": \"bank\" | \"remittance\" | \"exchange\" | \"p2p\" | \"other\",\n' +
-            ' \"isLoadit\": boolean,\n' +
-            ' \"isBest\": boolean,\n' +
-            ' \"feeUsd\": number,\n' +
-            ' \"feePercent\": number,\n' +
-            ' \"speed\": string,\n' +
-            ' \"notes\": string\n' +
-            " }\n" +
-            " ],\n" +
-            ' \"summary\": string\n' +
+            '  "routes": [\n' +
+            "    {\n" +
+            '      "name": string,\n' +
+            '      "type": "bank" | "remittance" | "exchange" | "p2p" | "other",\n' +
+            '      "isLoadit": boolean,\n' +
+            '      "isBest": boolean,\n' +
+            '      "feeUsd": number,\n' +
+            '      "feePercent": number,\n' +
+            '      "speed": string,\n' +
+            '      "notes": string\n' +
+            "    }\n" +
+            "  ],\n" +
+            '  "summary": string\n' +
             "}\n\n" +
             "Rules:\n" +
             "- Do NOT mark any route as Loadit or LMS.\n" +
@@ -193,11 +193,13 @@ app.post("/api/ai-routing-sim", async (req, res) => {
     const aiRoutes = Array.isArray(parsed.routes) ? parsed.routes : [];
 
     // --- Normalize AI routes (NON-Loadit only) ---
+    let hasP2P = false;
+
     const normalized = aiRoutes.slice(0, 6).map((r) => {
       let name = (r.name || "Unnamed route").toString();
       let type = (r.type || "other").toString();
       let isLoadit = false;
-      let isBest = false; // we ignore AI's 'best' because LMS will be best in our UI
+      let isBest = false; // LMS will be best in our UI
       let speed = (r.speed || "").toString();
       let notes = (r.notes || "").toString();
       let feeUsd = Math.max(0, Number(r.feeUsd) || 0);
@@ -320,33 +322,26 @@ app.post("/api/ai-routing-sim", async (req, res) => {
         type = "exchange"; // treat it as an on-chain/exchange-style rail
       }
 
-      // --- P2P / OTC crypto routes from AI (we'll replace with our own card) ---
-      const looksP2P =
+      // --- P2P / OTC crypto routes ---
+      if (
         lowerType === "p2p" ||
         lowerName.includes("p2p") ||
         lowerName.includes("localbitcoins") ||
-        lowerName.includes("otc");
-
-      if (looksP2P) {
+        lowerName.includes("otc")
+      ) {
+        hasP2P = true;
         if (!speed) speed = "Hours to 1 day";
 
         let p2pPct;
-        if (amount < 500) p2pPct = 3.0;
+        if (amount < 500) p2pPct = 3.0; // small P2P transfers get heavy spreads
         else if (amount < 5000) p2pPct = 2.0;
         else p2pPct = 1.2;
-
-        const fixedP2P = 8;
+        const fixedP2P = 8; // extra hassle / desk fee
         const midP2PFeeUsd = money((p2pPct / 100) * amount + fixedP2P);
         const lowP2PFeeUsd = money(midP2PFeeUsd * 0.7);
         const highP2PFeeUsd = money(midP2PFeeUsd * 1.3);
 
         name = "P2P / OTC Crypto Transfer";
-        type = "p2p";
-
-        offRampLowUsd = lowP2PFeeUsd;
-        offRampMidUsd = midP2PFeeUsd;
-        offRampHighUsd = highP2PFeeUsd;
-
         notes =
           `Peer-to-peer or OTC crypto transfer. On-chain fees themselves can be low, but most receivers still need to cash out through an OTC desk, reseller, or exchange to get usable fiat. ` +
           `That usually means spreads, desk markups, and withdrawal or bank deposit fees. ` +
@@ -359,9 +354,14 @@ app.post("/api/ai-routing-sim", async (req, res) => {
           )} range, with about $${midP2PFeeUsd.toFixed(
             2
           )} as a reasonable mid-point. ` +
-          `Bottom line: the cheap % you see on raw crypto transfers does NOT include these off-ramp/cash-out costs. If the receiver needs local cash, doing it manually via P2P/OTC usually ends up more expensive, slower, and riskier than letting LMS route and off-ramp for ~0.20% all-in.`;
+          `Once those are included, P2P/OTC is often more expensive, slower, and riskier for normal users than LMS, which routes value automatically and pays out directly in local fiat without users having to manage crypto or find their own cash-out path.`;
+        type = "p2p";
 
-        // Use the mid-point as the modeled fee for this AI P2P route
+        offRampLowUsd = lowP2PFeeUsd;
+        offRampMidUsd = midP2PFeeUsd;
+        offRampHighUsd = highP2PFeeUsd;
+
+        // Use the mid-point as the modeled fee for this route
         feeUsd = midP2PFeeUsd;
         feePercent = money((feeUsd / amount) * 100);
       }
@@ -390,9 +390,6 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       };
     });
 
-    // Strip AI-created P2P routes so we only show ONE clear P2P card we control
-    const normalizedNonP2P = normalized.filter((r) => r.type !== "p2p");
-
     // --- Synthetic MoneyGram rail (legacy baseline) ---
     const mgPct = 6.0;
     const mgFeeUsd = money((mgPct / 100) * amount);
@@ -412,43 +409,45 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       totalEstimatedCostUsd: mgFeeUsd,
     };
 
-    // --- Synthetic P2P / OTC rail (its own card, always present) ---
-    let p2pPct;
-    if (amount < 500) p2pPct = 3.0;
-    else if (amount < 5000) p2pPct = 2.0;
-    else p2pPct = 1.2;
+    // --- Synthetic P2P / OTC rail if AI didn't give us one ---
+    let p2pRoute = null;
+    if (!hasP2P) {
+      let p2pPct;
+      if (amount < 500) p2pPct = 3.0;
+      else if (amount < 5000) p2pPct = 2.0;
+      else p2pPct = 1.2;
+      const fixedP2P = 8;
+      const midP2PFeeUsd = money((p2pPct / 100) * amount + fixedP2P);
+      const lowP2PFeeUsd = money(midP2PFeeUsd * 0.7);
+      const highP2PFeeUsd = money(midP2PFeeUsd * 1.3);
 
-    const fixedP2P = 8;
-    const midP2PFeeUsd = money((p2pPct / 100) * amount + fixedP2P);
-    const lowP2PFeeUsd = money(midP2PFeeUsd * 0.7);
-    const highP2PFeeUsd = money(midP2PFeeUsd * 1.3);
-
-    const p2pRoute = {
-      name: "P2P / OTC Crypto Transfer",
-      type: "p2p",
-      isLoadit: false,
-      isBest: false,
-      feeUsd: midP2PFeeUsd,
-      feePercent: money((midP2PFeeUsd / amount) * 100),
-      speed: "Hours to 1 day",
-      notes:
-        `Peer-to-peer or OTC crypto transfer. On-chain fees can look cheap, but most receivers still need to cash out through an OTC desk, reseller, or exchange to get usable fiat. ` +
-        `That usually means spreads, desk markups, and withdrawal or bank deposit fees. ` +
-        `For an amount around $${amount.toFixed(
-          2
-        )}, real-world cash-out costs for P2P/OTC typically fall in the ~$${lowP2PFeeUsd.toFixed(
-          2
-        )}–$${highP2PFeeUsd.toFixed(
-          2
-        )} range, with about $${midP2PFeeUsd.toFixed(
-          2
-        )} as a reasonable mid-point just to get back to fiat. ` +
-        `Bottom line: the cheap % you see on crypto transfers does NOT include these off-ramp/cash-out costs. If the receiver needs local cash, doing it manually via P2P/OTC usually ends up more expensive, slower, and riskier than letting LMS route and off-ramp for ~0.20% all-in.`,
-      offRampLowUsd: lowP2PFeeUsd,
-      offRampMidUsd: midP2PFeeUsd,
-      offRampHighUsd: highP2PFeeUsd,
-      totalEstimatedCostUsd: midP2PFeeUsd, // modeled as the core cost here
-    };
+      p2pRoute = {
+        name: "P2P / OTC Crypto Transfer",
+        type: "p2p",
+        isLoadit: false,
+        isBest: false,
+        feeUsd: midP2PFeeUsd,
+        feePercent: money((midP2PFeeUsd / amount) * 100),
+        speed: "Hours to 1 day",
+        notes:
+          `Peer-to-peer or OTC crypto transfer. On-chain fees can look cheap, but most receivers still need to cash out through an OTC desk, reseller, or exchange to get usable fiat. ` +
+          `That usually means spreads, desk markups, and withdrawal or bank deposit fees. ` +
+          `For an amount around $${amount.toFixed(
+            2
+          )}, real-world cash-out costs for P2P/OTC typically fall in the ~$${lowP2PFeeUsd.toFixed(
+            2
+          )}–$${highP2PFeeUsd.toFixed(
+            2
+          )} range, with about $${midP2PFeeUsd.toFixed(
+            2
+          )} as a reasonable mid-point just to get back to fiat. ` +
+          `Bottom line: the cheap % you see on crypto transfers does NOT include these off-ramp/cash-out costs. For normal users who just want local cash, LMS's ~0.20% all-in fee is usually cheaper, simpler, and safer than DIY P2P/OTC.`,
+        offRampLowUsd: lowP2PFeeUsd,
+        offRampMidUsd: midP2PFeeUsd,
+        offRampHighUsd: highP2PFeeUsd,
+        totalEstimatedCostUsd: midP2PFeeUsd,
+      };
+    }
 
     // --- LMS Rail (Loadit-only, 0.20% + $0.50 if ≤ $100) ---
     let lmsFeeUsd = money(amount * 0.002); // 0.20%
@@ -470,18 +469,29 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       offRampLowUsd: null,
       offRampMidUsd: null,
       offRampHighUsd: null,
-      totalEstimatedCostUsd: lmsFeeUsd, // all-in via AI routing
+      totalEstimatedCostUsd: lmsFeeUsd,
     };
 
-    const finalRoutes = [
-      ...normalizedNonP2P,
-      mgRoute,
-      p2pRoute,
-      lmsRoute,
-    ];
+    const extraRoutes = [mgRoute];
+    if (p2pRoute) extraRoutes.push(p2pRoute);
+
+    const finalRoutes = [...normalized, ...extraRoutes, lmsRoute];
 
     return res.json({
       routes: finalRoutes,
       summary:
         parsed.summary ||
-        `AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the modern option that uses the cheapest digital-asset rails under the hood, but keeps the experience fiat-only on both side
+        `AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the modern option that uses the cheapest digital-asset rails under the hood, but keeps the experience fiat-only on both sides with ~0.20% all-in platform fees (plus a small buffer on smaller transfers), and avoids the extra off-ramp/withdrawal and cash-out costs users would face with DIY stablecoin or P2P/OTC crypto routes.`,
+    });
+  } catch (err) {
+    console.error("AI Routing Simulator (LMS-only) error:", err);
+    return res
+      .status(500)
+      .json({ error: "Failed to simulate routes with OpenAI." });
+  }
+});
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log("AERO LITE (AI + LMS-only) running on port", PORT);
+});
