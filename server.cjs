@@ -166,7 +166,7 @@ feeUsd: lmsFeeUsd,
 feePercent: lmsPct,
 speed: "Instant to ~1 hour",
 notes:
-"Recommended route – LMS uses modern rails and stablecoin-style settlement with a 0.20% platform fee, plus a small $0.50 buffer for transfers ≤ $100. Designed to beat legacy providers on both cost and speed.",
+"Recommended route – LMS takes cash or card in on the send side, routes value over the cheapest digital asset rails (often stablecoins) behind the scenes, and converts it back into local fiat for the receiver. The sender and receiver never touch a crypto wallet. LMS exposes that as a single ~0.20% platform fee (plus a small $0.50 buffer for transfers ≤ $100) and is designed to beat Western Union, MoneyGram, and exchanges on both cost and speed, while enabling in-store cash pickup or low-fee withdrawal where supported.",
 },
 ],
 summary:
@@ -297,7 +297,7 @@ feeUsd: lmsFeeUsd,
 feePercent: lmsPct,
 speed: "Instant to ~1 hour",
 notes:
-"Recommended route – AERO chooses the cheapest, fastest, secure mix of rails under the hood. LMS exposes that as a single 0.20% platform fee (plus a small $0.50 buffer for transfers ≤ $100), designed to beat Western Union, MoneyGram, and exchanges on both cost and speed.",
+"Recommended route – LMS takes cash or card from the sender, routes the value over the cheapest digital asset rails (often stablecoins) under the hood, and settles back into local fiat for the receiver. The sender and receiver stay 100% in fiat: no wallets, no seed phrases, no exchanges. LMS wraps this into a single ~0.20% platform fee (plus a small $0.50 buffer for transfers ≤ $100) and is designed to beat Western Union, MoneyGram, and exchanges on both cost and speed, while enabling in-store cash pickup or low-fee withdrawals where supported.",
 };
 
 const finalRoutes = [...normalized, wuRoute, mgRoute, lmsRoute];
@@ -306,7 +306,7 @@ return res.json({
 routes: finalRoutes,
 summary:
 parsed.summary ||
-`AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the cheapest modern option (~0.20% fee plus a small buffer on small transfers).`,
+`AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the modern option that uses the cheapest digital-asset rails under the hood, but keeps the experience fiat-only on both sides with ~0.20% all-in platform fees (plus a small buffer on smaller transfers).`,
 });
 } catch (err) {
 console.error("AI Routing Simulator (LMS-only) error:", err);
