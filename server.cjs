@@ -1,4 +1,4 @@
-// server.cjs – AERO LITE (AI Routing Simulator with LMS, WU, MG)
+// server.cjs – AERO LITE (AI-powered, LMS-only, 0.20% fee)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -12,17 +12,17 @@ const openai = new OpenAI({
 apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Helper to format money
+// Helper to format money safely
 function money(x) {
 return Number.isFinite(x) ? Number(x.toFixed(2)) : 0;
 }
 
 // Healthcheck
 app.get("/", (req, res) => {
-res.json({ ok: true, service: "loadit-aero-lite" });
+res.json({ ok: true, service: "loadit-aero-lite-lms-only" });
 });
 
-// ========== AI Routing Simulator (AERO preview) ==========
+// ========== AI Routing Simulator (AERO, LMS-only Loadit rail) ==========
 app.post("/api/ai-routing-sim", async (req, res) => {
 try {
 const { from, to, amountUsd, assetPreference } = req.body || {};
@@ -43,7 +43,7 @@ return res
 
 const userAsset = (assetPreference || "").toString();
 
-// --- Call OpenAI to propose generic routes (we'll normalize + add our own rails) ---
+// --- Call OpenAI to propose generic routes (bank / remittance / exchange, etc) ---
 const completion = await openai.chat.completions.create({
 model: "gpt-4.1-mini",
 temperature: 0.4,
@@ -52,39 +52,31 @@ messages: [
 role: "system",
 content:
 "You are Loadit's AERO routing planner. " +
-"Given a cross-border transfer, you design 3–4 possible payment routes. " +
+"Given a cross-border transfer, you design several possible payment routes. " +
 "You know about: traditional bank wires, card-based remittance services, " +
-"centralized exchanges, on-chain crypto transfers, stablecoins, and a special 'Loadit hybrid' rail " +
-"that turns cash/card into crypto and settles on-chain.\n\n" +
+"centralized exchanges, on-chain crypto transfers, and stablecoin-based remittance. \n\n" +
 "You DO NOT use live FX or live gas data. You just use typical patterns.\n\n" +
 "Return STRICT JSON only with this schema:\n" +
 "{\n" +
-' \"routes\": [\n' +
+' "routes": [\n' +
 " {\n" +
-' \"name\": string,\n' +
-' \"type\": \"bank\" | \"remittance\" | \"exchange\" | \"loadit-hybrid\" | \"p2p\" | \"other\",\n' +
-' \"isLoadit\": boolean,\n' +
-' \"isBest\": boolean,\n' +
-' \"feeUsd\": number,\n' +
-' \"feePercent\": number,\n' +
-' \"speed\": string,\n' +
-' \"notes\": string\n' +
+' "name": string,\n' +
+' "type": "bank" | "remittance" | "exchange" | "p2p" | "other",\n' +
+' "isLoadit": boolean,\n' +
+' "isBest": boolean,\n' +
+' "feeUsd": number,\n' +
+' "feePercent": number,\n' +
+' "speed": string,\n' +
+' "notes": string\n' +
 " }\n" +
 " ],\n" +
-' \"summary\": string\n' +
+' "summary": string\n' +
 "}\n\n" +
 "Rules:\n" +
+"- Do NOT invent explicit Loadit rails; Loadit-specific pricing will be applied by the backend.\n" +
+"- Focus on realistic legacy rails: bank wires, typical remittance apps, exchanges, etc.\n" +
 "- feePercent must be between 0 and 25.\n" +
 "- feeUsd must be >= 0.\n" +
-"- At least one route MUST be a 'loadit-hybrid' with isLoadit=true.\n" +
-"- For Loadit hybrid routes, assume roughly a 0.75% platform fee plus a small dynamic network fee " +
-"(total usually between 0.85% and 1.0%, rarely up to ~1.2% in extreme conditions).\n" +
-"- Typical speeds:\n" +
-" * Bank wires: 2–5 business days\n" +
-" * Card-based remittance: minutes to a few hours\n" +
-" * Centralized exchange transfers: minutes to a few hours\n" +
-" * Loadit hybrid rail: minutes to within ~1 hour\n" +
-"- Mark exactly ONE route as isBest=true (the one you'd recommend).\n" +
 "- Base your numbers on realistic but rough averages for today's remittance/crypto landscape, NOT on live data.",
 },
 {
@@ -108,16 +100,21 @@ parsed = JSON.parse(rawContent);
 } catch (e) {
 console.error("AERO JSON parse error:", rawContent);
 
-// Very simple fallback routes if AI JSON blows up
-const bankFlat = 35; // example flat wire fee
-const bankFeeUsd = money(Math.max(bankFlat, amount * 0.002)); // ~0.2% min
-const platformPct = 0.75;
-const networkPct = 0.15;
-const loaditHybridPct = platformPct + networkPct;
-const loaditHybridFeeUsd = money((loaditHybridPct / 100) * amount);
+// Simple fallback if AI JSON breaks
+const bankFlat = 35;
+const bankFeeUsd = money(Math.max(bankFlat, amount * 0.002)); // ~0.2%
+const bankFeePct = money((bankFeeUsd / amount) * 100);
 
-// LMS: 0.30% + $0.50 if <= 100
-let lmsFeeUsd = money(amount * 0.003);
+// Generic remittance ~5%
+const remitPct = 5.0;
+const remitFeeUsd = money((remitPct / 100) * amount);
+
+// Exchange ~1.2%
+const exPct = 1.2;
+const exFeeUsd = money((exPct / 100) * amount);
+
+// LMS 0.20% + $0.50 under $100
+let lmsFeeUsd = money(amount * 0.002);
 if (amount <= 100) {
 lmsFeeUsd = money(lmsFeeUsd + 0.5);
 }
@@ -126,26 +123,37 @@ const lmsPct = money((lmsFeeUsd / amount) * 100);
 return res.json({
 routes: [
 {
-name: "Traditional bank transfer",
+name: "Traditional Bank Transfer",
 type: "bank",
 isLoadit: false,
 isBest: false,
 feeUsd: bankFeeUsd,
-feePercent: money((bankFeeUsd / amount) * 100),
+feePercent: bankFeePct,
 speed: "2–5 business days",
 notes:
-"Fallback route. Legacy bank wire using SWIFT-style rails with flat and FX costs.",
+"Fallback route. Legacy bank wire with flat fees and FX margin on top.",
 },
 {
-name: "Loadit hybrid rail",
-type: "loadit-hybrid",
-isLoadit: true,
+name: "Card-Based Remittance Service",
+type: "remittance",
+isLoadit: false,
 isBest: false,
-feeUsd: loaditHybridFeeUsd,
-feePercent: money(loaditHybridPct),
-speed: "Minutes to ~1 hour",
+feeUsd: remitFeeUsd,
+feePercent: remitPct,
+speed: "Minutes to a few hours",
 notes:
-"Fallback Loadit crypto rail modeled as ~0.75% platform fee plus ~0.15% estimated network fee.",
+"Fallback route. Typical remittance app with FX spread and service fees.",
+},
+{
+name: "Centralized Exchange Transfer",
+type: "exchange",
+isLoadit: false,
+isBest: false,
+feeUsd: exFeeUsd,
+feePercent: exPct,
+speed: "Minutes to a few hours",
+notes:
+"Fallback route. Exchange-based transfer including trading, spread, and withdrawal costs.",
 },
 {
 name: "Loadit Money Service (LMS Rail)",
@@ -156,7 +164,7 @@ feeUsd: lmsFeeUsd,
 feePercent: lmsPct,
 speed: "Instant to ~1 hour",
 notes:
-"Recommended route. LMS uses AI-optimized stablecoin settlement with a 0.30% fee plus a small $0.50 buffer for transfers ≤ $100. Lowest overall fee and fastest typical delivery.",
+"Recommended route – LMS uses modern rails with a 0.20% platform fee, plus a small $0.50 buffer for transfers ≤ $100. Designed to beat legacy providers on both cost and speed.",
 },
 ],
 summary:
@@ -164,38 +172,40 @@ summary:
 });
 }
 
-const routes = Array.isArray(parsed.routes) ? parsed.routes : [];
+const aiRoutes = Array.isArray(parsed.routes) ? parsed.routes : [];
 
-// --- Normalize AI routes & apply realistic fees per type ---
-const normalized = routes.slice(0, 6).map((r) => {
+// --- Normalize AI routes (non-Loadit rails) ---
+const normalized = aiRoutes.slice(0, 6).map((r) => {
 let name = (r.name || "Unnamed route").toString();
 let type = (r.type || "other").toString();
-let isLoadit = Boolean(r.isLoadit);
-let isBest = Boolean(r.isBest);
+let isLoadit = false; // we ignore AI's Loadit tagging; LMS will be the only Loadit rail
+let isBest = false;
 let speed = (r.speed || "").toString();
 let notes = (r.notes || "").toString();
 let feeUsd = Math.max(0, Number(r.feeUsd) || 0);
 let feePercent = Number(r.feePercent) || 0;
 
-// Clamp insane values
 if (feePercent < 0) feePercent = 0;
 if (feePercent > 25) feePercent = 25;
 
-// --- Bank transfer normalization ---
-if (type === "bank" || name.toLowerCase().includes("bank")) {
-const baseFlat = 35; // typical SWIFT fee
-feeUsd = money(Math.max(baseFlat, amount * 0.002)); // ~0.2% minimum
+const lowerName = name.toLowerCase();
+const lowerType = type.toLowerCase();
+
+// --- Bank normalization ---
+if (lowerType === "bank" || lowerName.includes("bank")) {
+const bankFlat = 35;
+feeUsd = money(Math.max(bankFlat, amount * 0.002)); // ~0.2%
 feePercent = money((feeUsd / amount) * 100);
 if (!speed) speed = "2–5 business days";
 if (!notes) {
 notes =
 "Legacy bank transfer using SWIFT-style rails with flat fees and FX margin on top.";
 }
+type = "bank";
 }
 
-// --- Generic remittance normalization (non-Loadit) ---
-if (type === "remittance") {
-// Typical 3–7%
+// --- Remittance normalization (generic apps) ---
+if (lowerType === "remittance" || lowerName.includes("remit")) {
 let remitPct = 4.5;
 if (amount < 300) remitPct = 6.5;
 else if (amount > 5000) remitPct = 3.0;
@@ -206,55 +216,27 @@ if (!notes) {
 notes =
 "Card-based remittance rail with typical FX and service markups in the 3–7% range.";
 }
+type = "remittance";
 }
 
-// --- Centralized exchange normalization ---
-if (
-type === "exchange" ||
-name.toLowerCase().includes("exchange")
-) {
-// 0.8–1.5% typical all-in
+// --- Exchange normalization ---
+if (lowerType === "exchange" || lowerName.includes("exchange")) {
 let exPct = 1.0;
 if (amount < 300) exPct = 1.5;
 else if (amount > 10000) exPct = 0.8;
 feeUsd = money((exPct / 100) * amount);
 feePercent = money(exPct);
-speed = "Minutes to a few hours"; // no more 'within 1 day'
+speed = "Minutes to a few hours";
 if (!notes) {
 notes =
 "Centralized exchange transfer including trading fees, spread, and withdrawal fees.";
 }
+type = "exchange";
 }
 
-// --- Loadit hybrid rail normalization (~1% total) ---
-if (isLoadit || type === "loadit-hybrid") {
-const platformPct = 0.75;
-let networkPct;
-if (amount <= 300) {
-networkPct = 0.10;
-} else if (amount <= 2000) {
-networkPct = 0.15;
-} else {
-networkPct = 0.25;
+if (!speed) {
+speed = "Unknown – varies by provider";
 }
-const totalPct = platformPct + networkPct;
-feeUsd = money((totalPct / 100) * amount);
-feePercent = money(totalPct);
-if (!speed || speed.toLowerCase().includes("day")) {
-speed = "Minutes to ~1 hour";
-}
-notes =
-(notes ? notes + " " : "") +
-`Modeled as ~${platformPct.toFixed(
-2
-)}% platform fee + ~${networkPct.toFixed(
-2
-)}% estimated network fee (total ~${totalPct.toFixed(2)}%).`;
-isLoadit = true;
-}
-
-// Normalize any unknown types with fallback speed
-if (!speed) speed = "Unknown – varies by provider";
 
 return {
 name,
@@ -268,12 +250,9 @@ notes,
 };
 });
 
-// --- Add explicit Western Union + MoneyGram synthetic rails ---
-const wuPct = 7.0; // 7% typical
-const mgPct = 6.0; // 6% typical
+// --- Synthetic Western Union + MoneyGram rails ---
+const wuPct = 7.0;
 const wuFeeUsd = money((wuPct / 100) * amount);
-const mgFeeUsd = money((mgPct / 100) * amount);
-
 const wuRoute = {
 name: "Western Union (Legacy Rail)",
 type: "remittance",
@@ -283,9 +262,11 @@ feeUsd: wuFeeUsd,
 feePercent: money(wuPct),
 speed: "Minutes to a few hours",
 notes:
-"Traditional money transfer provider with high FX margins and service fees, typically around 6–12% all-in.",
+"Traditional money transfer provider with high FX margins and service fees, often around 6–12% all-in.",
 };
 
+const mgPct = 6.0;
+const mgFeeUsd = money((mgPct / 100) * amount);
 const mgRoute = {
 name: "MoneyGram (Legacy Rail)",
 type: "remittance",
@@ -298,8 +279,8 @@ notes:
 "Legacy remittance provider with card and cash pickup options, typically around 5–10% total cost.",
 };
 
-// --- Add LMS Rail (0.30% + $0.50 if ≤ $100) ---
-let lmsFeeUsd = money(amount * 0.003);
+// --- LMS Rail (Loadit-only, 0.20% + $0.50 if ≤ $100) ---
+let lmsFeeUsd = money(amount * 0.002); // 0.20%
 if (amount <= 100) {
 lmsFeeUsd = money(lmsFeeUsd + 0.5);
 }
@@ -309,36 +290,24 @@ const lmsRoute = {
 name: "Loadit Money Service (LMS Rail)",
 type: "lms",
 isLoadit: true,
-isBest: true, // Recommended + Lowest Fee
+isBest: true, // Recommended route
 feeUsd: lmsFeeUsd,
 feePercent: lmsPct,
 speed: "Instant to ~1 hour",
 notes:
-"Recommended route – lowest fee and AI-optimized. LMS uses stablecoin settlement and intelligent routing with a 0.30% fee, plus a small $0.50 buffer for transfers ≤ $100. Designed to beat Western Union, MoneyGram, and exchanges on both cost and speed.",
+"Recommended route – lowest fee and AI-modeled. LMS uses modern rails and stablecoin-style settlement with a 0.20% platform fee, plus a small $0.50 buffer for transfers ≤ $100. Designed to beat Western Union, MoneyGram, and exchanges on both cost and speed.",
 };
 
-// Clear any 'isBest' flags from other routes – LMS is the recommended one
-const cleaned = normalized.map((r) => ({
-...r,
-isBest: false,
-}));
-
-// Compose final routes array
-const finalRoutes = [
-...cleaned,
-wuRoute,
-mgRoute,
-lmsRoute,
-];
+const finalRoutes = [...normalized, wuRoute, mgRoute, lmsRoute];
 
 return res.json({
 routes: finalRoutes,
 summary:
 parsed.summary ||
-"AERO simulated multiple rails including banks, legacy remittance, exchanges, Loadit hybrid, and Loadit Money Service (LMS).",
+`AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the cheapest modern option (~0.20% fee plus buffer on small transfers).`,
 });
 } catch (err) {
-console.error("AI Routing Simulator error:", err);
+console.error("AI Routing Simulator (LMS-only) error:", err);
 return res
 .status(500)
 .json({ error: "Failed to simulate routes with OpenAI." });
@@ -347,5 +316,5 @@ return res
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-console.log("AERO LITE running on port", PORT);
+console.log("AERO LITE (AI + LMS-only) running on port", PORT);
 });
