@@ -197,7 +197,7 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       let name = (r.name || "Unnamed route").toString();
       let type = (r.type || "other").toString();
       const isLoadit = false;
-      const isBest = false; // we ignore AI's 'best' because LMS will be best in our UI
+      const isBest = false; // LMS will be best in our UI
       let speed = (r.speed || "").toString();
       let notes = (r.notes || "").toString();
       let feeUsd = Math.max(0, Number(r.feeUsd) || 0);
@@ -391,25 +391,6 @@ app.post("/api/ai-routing-sim", async (req, res) => {
     // We don't want AI-created P2P routes (we'll add one clean P2P card ourselves)
     const normalizedNonP2P = normalized.filter((r) => r.type !== "p2p");
 
-    // --- Synthetic MoneyGram rail (legacy baseline) ---
-    const mgPct = 6.0;
-    const mgFeeUsd = money((mgPct / 100) * amount);
-    const mgRoute = {
-      name: "MoneyGram (Legacy Rail)",
-      type: "remittance",
-      isLoadit: false,
-      isBest: false,
-      feeUsd: mgFeeUsd,
-      feePercent: money(mgPct),
-      speed: "Minutes to a few hours",
-      notes:
-        "Legacy remittance provider with card and cash pickup options, typically around 5–10% total cost.",
-      offRampLowUsd: null,
-      offRampMidUsd: null,
-      offRampHighUsd: null,
-      totalEstimatedCostUsd: mgFeeUsd,
-    };
-
     // --- Synthetic P2P / OTC rail (single card) ---
     let p2pPct;
     if (amount < 500) p2pPct = 3.0;
@@ -470,8 +451,8 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       totalEstimatedCostUsd: lmsFeeUsd, // all-in via AI routing
     };
 
-    // FINAL LIST: AI routes (no P2P), + MoneyGram, + ONE P2P card, + LMS
-    const finalRoutes = [...normalizedNonP2P, mgRoute, p2pRoute, lmsRoute];
+    // FINAL LIST: AI routes (no P2P), + ONE P2P card, + LMS
+    const finalRoutes = [...normalizedNonP2P, p2pRoute, lmsRoute];
 
     return res.json({
       routes: finalRoutes,
