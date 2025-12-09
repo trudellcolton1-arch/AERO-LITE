@@ -12,7 +12,7 @@ const openai = new OpenAI({
 apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Helper to format money
+// Helper to format money safely
 function money(x) {
 return Number.isFinite(x) ? Number(x.toFixed(2)) : 0;
 }
@@ -76,8 +76,13 @@ content:
 "- feePercent must be between 0 and 25.\n" +
 "- feeUsd must be >= 0.\n" +
 "- At least one route MUST be a 'loadit-hybrid' with isLoadit=true.\n" +
-"- For Loadit hybrid routes, assume roughly a 1% platform fee plus a small dynamic network fee " +
-"(total usually between 1.1% and 1.6%, rarely up to ~2% in extreme conditions).\n" +
+"- For Loadit hybrid routes, assume roughly a 0.75% platform fee plus a small dynamic network fee " +
+"(total usually between 0.85% and 1.0%, rarely up to ~1.2% in extreme conditions).\n" +
+"- Typical speeds:\n" +
+" * Bank wires: 2–5 business days\n" +
+" * Card-based remittance: minutes to a few hours\n" +
+" * Centralized exchange transfers: minutes to a few hours\n" +
+" * Loadit hybrid rail: minutes to within ~1 hour\n" +
 "- Mark exactly ONE route as isBest=true (the one you'd recommend).\n" +
 "- Base your numbers on realistic but rough averages for today's remittance/crypto landscape, NOT on live data.",
 },
@@ -102,12 +107,12 @@ parsed = JSON.parse(rawContent);
 } catch (e) {
 console.error("AERO JSON parse error:", rawContent);
 
-// Fallback: very simple deterministic routes
+// Simple fallback routes
 const bankFeeUsd = money(amount * 0.07); // ~7%
-const loaditPlatformPct = 1.0;
-const loaditNetworkPct = 0.25; // ~0.25% network
-const loaditTotalPct = loaditPlatformPct + loaditNetworkPct;
-const loaditFeeUsd = money((loaditTotalPct / 100) * amount);
+const platformPct = 0.75;
+const networkPct = 0.15;
+const totalPct = platformPct + networkPct;
+const loaditFeeUsd = money((totalPct / 100) * amount);
 
 return res.json({
 routes: [
@@ -128,10 +133,10 @@ type: "loadit-hybrid",
 isLoadit: true,
 isBest: true,
 feeUsd: loaditFeeUsd,
-feePercent: money(loaditTotalPct),
+feePercent: money(totalPct),
 speed: "Minutes to ~1 hour",
 notes:
-"Fallback route modeled as ~1.0% platform fee plus ~0.25% estimated network fee.",
+"Fallback route modeled as ~0.75% platform fee plus ~0.15% estimated network fee.",
 },
 ],
 summary:
@@ -154,18 +159,17 @@ let isBest = Boolean(r.isBest);
 let speed = (r.speed || "unknown").toString();
 let notes = (r.notes || "").toString();
 
-// 🔥 Option C + D: override Loadit hybrid pricing:
-// 1% platform fee + dynamic network fee based on amount
+// 🔥 Ultra-competitive Loadit pricing: 0.75% platform + dynamic 0.10–0.25% network
 if (isLoadit || type === "loadit-hybrid") {
-const platformPct = 1.0;
+const platformPct = 0.75;
 
 let networkPct;
 if (amount <= 300) {
-networkPct = 0.15; // small payment lane
+networkPct = 0.10; // small payments
 } else if (amount <= 2000) {
-networkPct = 0.25; // medium payment lane
+networkPct = 0.15; // medium
 } else {
-networkPct = 0.35; // large payment lane
+networkPct = 0.25; // large / high-value
 }
 
 const totalPct = platformPct + networkPct;
@@ -173,13 +177,25 @@ feeUsd = money((totalPct / 100) * amount);
 feePercent = money(totalPct);
 
 notes =
-notes +
-(notes ? " " : "") +
+(notes ? notes + " " : "") +
 `Modeled as ~${platformPct.toFixed(
 2
 )}% platform fee + ~${networkPct.toFixed(
 2
 )}% estimated network fee (total ~${totalPct.toFixed(2)}%).`;
+
+// Make sure Loadit looks fast
+if (!speed || speed.toLowerCase().includes("day")) {
+speed = "Minutes to ~1 hour";
+}
+}
+
+// Normalize centralized exchange speed text (no \"within 1 day\")
+if (
+type === "exchange" ||
+name.toLowerCase().includes("exchange")
+) {
+speed = "Minutes to a few hours";
 }
 
 return {
