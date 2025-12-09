@@ -43,7 +43,7 @@ return res
 
 const userAsset = (assetPreference || "").toString();
 
-// --- Call OpenAI to propose generic routes (bank / remittance / exchange, etc) ---
+// --- Call OpenAI to propose generic non-Loadit routes ---
 const completion = await openai.chat.completions.create({
 model: "gpt-4.1-mini",
 temperature: 0.4,
@@ -51,12 +51,17 @@ messages: [
 {
 role: "system",
 content:
-"You are Loadit's AERO routing planner. " +
-"Given a cross-border transfer, you design several possible payment routes. " +
-"You know about: traditional bank wires, card-based remittance services, " +
-"centralized exchanges, on-chain crypto transfers, and stablecoin-based remittance. \n\n" +
-"You DO NOT use live FX or live gas data. You just use typical patterns.\n\n" +
-"Return STRICT JSON only with this schema:\n" +
+"You are Loadit's AERO routing engine. " +
+"Given a cross-border transfer, your job is to design several realistic payment routes " +
+"and reason carefully about which rails are likely the CHEAPEST, the FASTEST, and the MOST SECURE.\n\n" +
+"You know about: traditional bank wires, card-based remittance services, centralized exchanges, " +
+"on-chain stablecoin transfers, and P2P/crypto rails.\n\n" +
+"IMPORTANT:\n" +
+"- You DO NOT design 'Loadit' or 'LMS' rails; the backend will add those.\n" +
+"- You ONLY describe legacy/standard rails and crypto/exchange rails.\n" +
+"- For each route, estimate realistic feeUsd and feePercent based on typical market ranges.\n" +
+"- In 'notes', explicitly mention if a route is mainly CHEAPEST, or FASTEST, or SECURITY-FOCUSED if applicable.\n\n" +
+"Return STRICT JSON ONLY with this schema:\n" +
 "{\n" +
 ' "routes": [\n' +
 " {\n" +
@@ -73,11 +78,12 @@ content:
 ' "summary": string\n' +
 "}\n\n" +
 "Rules:\n" +
-"- Do NOT invent explicit Loadit rails; Loadit-specific pricing will be applied by the backend.\n" +
-"- Focus on realistic legacy rails: bank wires, typical remittance apps, exchanges, etc.\n" +
+"- Do NOT mark any route as Loadit or LMS.\n" +
+"- isLoadit should always be false in your output.\n" +
+"- isBest can be true for one legacy route you think is 'best' WITHOUT Loadit.\n" +
 "- feePercent must be between 0 and 25.\n" +
 "- feeUsd must be >= 0.\n" +
-"- Base your numbers on realistic but rough averages for today's remittance/crypto landscape, NOT on live data.",
+"- Base your numbers on realistic averages (no live FX/gas).",
 },
 {
 role: "user",
@@ -86,8 +92,7 @@ content:
 2
 )} from ${from} to ${to}. ` +
 `Preferred asset (if any): ${userAsset || "none"}. ` +
-"Design 3–4 plausible routes with different rails and fee structures " +
-"and follow the JSON schema exactly.",
+"Design 3–5 plausible routes using different rails. Follow the JSON schema exactly.",
 },
 ],
 });
@@ -100,21 +105,18 @@ parsed = JSON.parse(rawContent);
 } catch (e) {
 console.error("AERO JSON parse error:", rawContent);
 
-// Simple fallback if AI JSON breaks
+// === Simple fallback if AI JSON breaks ===
 const bankFlat = 35;
 const bankFeeUsd = money(Math.max(bankFlat, amount * 0.002)); // ~0.2%
 const bankFeePct = money((bankFeeUsd / amount) * 100);
 
-// Generic remittance ~5%
 const remitPct = 5.0;
 const remitFeeUsd = money((remitPct / 100) * amount);
 
-// Exchange ~1.2%
 const exPct = 1.2;
 const exFeeUsd = money((exPct / 100) * amount);
 
-// LMS 0.20% + $0.50 under $100
-let lmsFeeUsd = money(amount * 0.002);
+let lmsFeeUsd = money(amount * 0.002); // 0.20%
 if (amount <= 100) {
 lmsFeeUsd = money(lmsFeeUsd + 0.5);
 }
@@ -164,7 +166,7 @@ feeUsd: lmsFeeUsd,
 feePercent: lmsPct,
 speed: "Instant to ~1 hour",
 notes:
-"Recommended route – LMS uses modern rails with a 0.20% platform fee, plus a small $0.50 buffer for transfers ≤ $100. Designed to beat legacy providers on both cost and speed.",
+"Recommended route – LMS uses modern rails and stablecoin-style settlement with a 0.20% platform fee, plus a small $0.50 buffer for transfers ≤ $100. Designed to beat legacy providers on both cost and speed.",
 },
 ],
 summary:
@@ -174,12 +176,12 @@ summary:
 
 const aiRoutes = Array.isArray(parsed.routes) ? parsed.routes : [];
 
-// --- Normalize AI routes (non-Loadit rails) ---
+// --- Normalize AI routes (NON-Loadit only) ---
 const normalized = aiRoutes.slice(0, 6).map((r) => {
 let name = (r.name || "Unnamed route").toString();
 let type = (r.type || "other").toString();
-let isLoadit = false; // we ignore AI's Loadit tagging; LMS will be the only Loadit rail
-let isBest = false;
+let isLoadit = false;
+let isBest = false; // we ignore AI's 'best' because LMS will be best in our UI
 let speed = (r.speed || "").toString();
 let notes = (r.notes || "").toString();
 let feeUsd = Math.max(0, Number(r.feeUsd) || 0);
@@ -204,7 +206,7 @@ notes =
 type = "bank";
 }
 
-// --- Remittance normalization (generic apps) ---
+// --- Remittance normalization ---
 if (lowerType === "remittance" || lowerName.includes("remit")) {
 let remitPct = 4.5;
 if (amount < 300) remitPct = 6.5;
@@ -250,7 +252,7 @@ notes,
 };
 });
 
-// --- Synthetic Western Union + MoneyGram rails ---
+// --- Synthetic Western Union + MoneyGram rails (legacy baselines) ---
 const wuPct = 7.0;
 const wuFeeUsd = money((wuPct / 100) * amount);
 const wuRoute = {
@@ -295,7 +297,7 @@ feeUsd: lmsFeeUsd,
 feePercent: lmsPct,
 speed: "Instant to ~1 hour",
 notes:
-"Recommended route – lowest fee and AI-modeled. LMS uses modern rails and stablecoin-style settlement with a 0.20% platform fee, plus a small $0.50 buffer for transfers ≤ $100. Designed to beat Western Union, MoneyGram, and exchanges on both cost and speed.",
+"Recommended route – AERO chooses the cheapest, fastest, secure mix of rails under the hood. LMS exposes that as a single 0.20% platform fee (plus a small $0.50 buffer for transfers ≤ $100), designed to beat Western Union, MoneyGram, and exchanges on both cost and speed.",
 };
 
 const finalRoutes = [...normalized, wuRoute, mgRoute, lmsRoute];
@@ -304,7 +306,7 @@ return res.json({
 routes: finalRoutes,
 summary:
 parsed.summary ||
-`AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the cheapest modern option (~0.20% fee plus buffer on small transfers).`,
+`AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the cheapest modern option (~0.20% fee plus a small buffer on small transfers).`,
 });
 } catch (err) {
 console.error("AI Routing Simulator (LMS-only) error:", err);
