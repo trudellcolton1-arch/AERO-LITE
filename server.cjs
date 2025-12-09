@@ -147,7 +147,7 @@ notes:
 "Fallback route. Typical remittance app with FX spread and service fees.",
 },
 {
-name: "Centralized Exchange Transfer",
+name: "Centralized Crypto Exchange Transfer",
 type: "exchange",
 isLoadit: false,
 isBest: false,
@@ -236,6 +236,42 @@ notes =
 type = "exchange";
 }
 
+// --- Stablecoin / on-chain crypto routes (USDC/USDT/etc) ---
+if (
+lowerName.includes("stable") ||
+lowerName.includes("usdc") ||
+lowerName.includes("usdt")
+) {
+if (!speed) speed = "Minutes";
+
+// Rough model of typical off-ramp + withdrawal fees to get cash from stablecoins.
+// We give a RANGE plus a mid-point, based on the amount.
+let withdrawPct;
+if (amount < 500) withdrawPct = 1.5; // small transfers get hit hardest
+else if (amount < 5000) withdrawPct = 1.0;
+else withdrawPct = 0.6;
+const fixedOffRamp = 5; // typical flat fee on top
+const midWithdrawFeeUsd = money(
+(withdrawPct / 100) * amount + fixedOffRamp
+);
+const lowWithdrawFeeUsd = money(midWithdrawFeeUsd * 0.7);
+const highWithdrawFeeUsd = money(midWithdrawFeeUsd * 1.3);
+
+notes =
+`On-chain stablecoin transfer. Technically fast and can look cheap for advanced crypto users who already manage wallets, gas fees, and off-ramps. ` +
+`But to turn stablecoins back into spendable cash, most people still have to use an exchange or off-ramp and pay separate withdrawal and payout fees. ` +
+`For an amount around $${amount.toFixed(
+2
+)}, typical off-ramp + withdrawal costs just to get back to fiat usually land in the ~$${lowWithdrawFeeUsd.toFixed(
+2
+)}–$${highWithdrawFeeUsd.toFixed(
+2
+)} range, with about $${midWithdrawFeeUsd.toFixed(
+2
+)} as a reasonable mid-point. ` +
+`Once you include those extra costs and the complexity, LMS is usually cheaper and far simpler for normal users, because it automates the digital-asset hop and pays out directly in local fiat with low or no visible withdrawal fees.`;
+}
+
 if (!speed) {
 speed = "Unknown – varies by provider";
 }
@@ -297,7 +333,7 @@ feeUsd: lmsFeeUsd,
 feePercent: lmsPct,
 speed: "Instant to ~1 hour",
 notes:
-"Recommended route – LMS takes cash or card from the sender, routes the value over the cheapest digital asset rails (often stablecoins) under the hood, and settles back into local fiat for the receiver. The sender and receiver stay 100% in fiat: no wallets, no seed phrases, no exchanges. LMS wraps this into a single ~0.20% platform fee (plus a small $0.50 buffer for transfers ≤ $100) and is designed to beat Western Union, MoneyGram, and exchanges on both cost and speed, while enabling in-store cash pickup or low-fee withdrawals where supported.",
+"Recommended route – LMS takes cash or card from the sender, routes the value over the cheapest digital asset rails (often stablecoins) under the hood, and settles back into local fiat for the receiver. The sender and receiver stay 100% in fiat: no wallets, no seed phrases, no exchanges. LMS wraps this into a single ~0.20% platform fee (plus a small $0.50 buffer for transfers ≤ $100) and is designed to beat Western Union, MoneyGram, centralized exchanges, and DIY stablecoin routes once off-ramp/withdrawal costs are included, while enabling in-store cash pickup or low-fee withdrawals where supported.",
 };
 
 const finalRoutes = [...normalized, wuRoute, mgRoute, lmsRoute];
@@ -306,7 +342,7 @@ return res.json({
 routes: finalRoutes,
 summary:
 parsed.summary ||
-`AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the modern option that uses the cheapest digital-asset rails under the hood, but keeps the experience fiat-only on both sides with ~0.20% all-in platform fees (plus a small buffer on smaller transfers).`,
+`AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the modern option that uses the cheapest digital-asset rails under the hood, but keeps the experience fiat-only on both sides with ~0.20% all-in platform fees (plus a small buffer on smaller transfers), and avoids the extra off-ramp/withdrawal costs users would face with DIY stablecoin routes.`,
 });
 } catch (err) {
 console.error("AI Routing Simulator (LMS-only) error:", err);
