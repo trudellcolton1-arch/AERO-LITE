@@ -60,22 +60,22 @@ content:
 "- You DO NOT design 'Loadit' or 'LMS' rails; the backend will add those.\n" +
 "- You ONLY describe legacy/standard rails and crypto/exchange rails.\n" +
 "- For each route, estimate realistic feeUsd and feePercent based on typical market ranges.\n" +
-"- In 'notes', explicitly mention if a route is mainly CHEAPEST, or FASTEST, or SECURITY-FOCUSED if applicable.\n\n" +
+"- In 'notes', mention any tradeoffs, including extra off-ramp, cash-out, or withdrawal costs when relevant (e.g., stablecoins, P2P, OTC).\n\n" +
 "Return STRICT JSON ONLY with this schema:\n" +
 "{\n" +
-' "routes": [\n' +
+' \"routes\": [\n' +
 " {\n" +
-' "name": string,\n' +
-' "type": "bank" | "remittance" | "exchange" | "p2p" | "other",\n' +
-' "isLoadit": boolean,\n' +
-' "isBest": boolean,\n' +
-' "feeUsd": number,\n' +
-' "feePercent": number,\n' +
-' "speed": string,\n' +
-' "notes": string\n' +
+' \"name\": string,\n' +
+' \"type\": \"bank\" | \"remittance\" | \"exchange\" | \"p2p\" | \"other\",\n' +
+' \"isLoadit\": boolean,\n' +
+' \"isBest\": boolean,\n' +
+' \"feeUsd\": number,\n' +
+' \"feePercent\": number,\n' +
+' \"speed\": string,\n' +
+' \"notes\": string\n' +
 " }\n" +
 " ],\n" +
-' "summary": string\n' +
+' \"summary\": string\n' +
 "}\n\n" +
 "Rules:\n" +
 "- Do NOT mark any route as Loadit or LMS.\n" +
@@ -247,10 +247,10 @@ if (!speed) speed = "Minutes";
 // Rough model of typical off-ramp + withdrawal fees to get cash from stablecoins.
 // We give a RANGE plus a mid-point, based on the amount.
 let withdrawPct;
-if (amount < 500) withdrawPct = 1.5; // small transfers get hit hardest
+if (amount < 500) withdrawPct = 1.5; // small transfers hit hardest
 else if (amount < 5000) withdrawPct = 1.0;
 else withdrawPct = 0.6;
-const fixedOffRamp = 5; // typical flat fee on top
+const fixedOffRamp = 5;
 const midWithdrawFeeUsd = money(
 (withdrawPct / 100) * amount + fixedOffRamp
 );
@@ -270,6 +270,42 @@ notes =
 2
 )} as a reasonable mid-point. ` +
 `Once you include those extra costs and the complexity, LMS is usually cheaper and far simpler for normal users, because it automates the digital-asset hop and pays out directly in local fiat with low or no visible withdrawal fees.`;
+}
+
+// --- P2P / OTC crypto routes ---
+if (
+lowerType === "p2p" ||
+lowerName.includes("p2p") ||
+lowerName.includes("localbitcoins") ||
+lowerName.includes("otc")
+) {
+if (!speed) speed = "Hours to 1 day";
+
+// Rough model of P2P/OTC cash-out costs to get fiat.
+// Again we show a RANGE plus a mid-point.
+let p2pPct;
+if (amount < 500) p2pPct = 3.0; // small P2P transfers get heavy spreads
+else if (amount < 5000) p2pPct = 2.0;
+else p2pPct = 1.2;
+const fixedP2P = 8; // extra hassle / desk fee
+const midP2PFeeUsd = money((p2pPct / 100) * amount + fixedP2P);
+const lowP2PFeeUsd = money(midP2PFeeUsd * 0.7);
+const highP2PFeeUsd = money(midP2PFeeUsd * 1.3);
+
+notes =
+`Peer-to-peer or OTC crypto transfer. On-chain fees themselves can be low, but most receivers still need to cash out through an OTC desk, reseller, or exchange to get usable fiat. ` +
+`That usually means spreads, desk markups, and withdrawal or bank deposit fees. ` +
+`For an amount around $${amount.toFixed(
+2
+)}, real-world cash-out costs for P2P/OTC typically fall in the ~$${lowP2PFeeUsd.toFixed(
+2
+)}–$${highP2PFeeUsd.toFixed(
+2
+)} range, with about $${midP2PFeeUsd.toFixed(
+2
+)} as a reasonable mid-point. ` +
+`Once those are included, P2P/OTC is often more expensive, slower, and riskier for normal users than LMS, which routes value automatically and pays out directly in local fiat without users having to manage crypto or find their own cash-out path.`;
+type = "p2p";
 }
 
 if (!speed) {
@@ -333,7 +369,7 @@ feeUsd: lmsFeeUsd,
 feePercent: lmsPct,
 speed: "Instant to ~1 hour",
 notes:
-"Recommended route – LMS takes cash or card from the sender, routes the value over the cheapest digital asset rails (often stablecoins) under the hood, and settles back into local fiat for the receiver. The sender and receiver stay 100% in fiat: no wallets, no seed phrases, no exchanges. LMS wraps this into a single ~0.20% platform fee (plus a small $0.50 buffer for transfers ≤ $100) and is designed to beat Western Union, MoneyGram, centralized exchanges, and DIY stablecoin routes once off-ramp/withdrawal costs are included, while enabling in-store cash pickup or low-fee withdrawals where supported.",
+"Recommended route – LMS takes cash or card from the sender, routes the value over the cheapest digital asset rails (often stablecoins) under the hood, and settles back into local fiat for the receiver. The sender and receiver stay 100% in fiat: no wallets, no seed phrases, no exchanges. LMS wraps this into a single ~0.20% platform fee (plus a small $0.50 buffer for transfers ≤ $100) and is designed to beat Western Union, MoneyGram, centralized exchanges, DIY stablecoin routes, and P2P/OTC once off-ramp/withdrawal and cash-out costs are included, while enabling in-store cash pickup or low-fee withdrawals where supported.",
 };
 
 const finalRoutes = [...normalized, wuRoute, mgRoute, lmsRoute];
@@ -342,7 +378,7 @@ return res.json({
 routes: finalRoutes,
 summary:
 parsed.summary ||
-`AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the modern option that uses the cheapest digital-asset rails under the hood, but keeps the experience fiat-only on both sides with ~0.20% all-in platform fees (plus a small buffer on smaller transfers), and avoids the extra off-ramp/withdrawal costs users would face with DIY stablecoin routes.`,
+`AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the modern option that uses the cheapest digital-asset rails under the hood, but keeps the experience fiat-only on both sides with ~0.20% all-in platform fees (plus a small buffer on smaller transfers), and avoids the extra off-ramp/withdrawal and cash-out costs users would face with DIY stablecoin or P2P/OTC crypto routes.`,
 });
 } catch (err) {
 console.error("AI Routing Simulator (LMS-only) error:", err);
