@@ -63,19 +63,19 @@ app.post("/api/ai-routing-sim", async (req, res) => {
             "- In 'notes', mention any tradeoffs, including extra off-ramp, cash-out, or withdrawal costs when relevant (e.g., stablecoins, P2P, OTC).\n\n" +
             "Return STRICT JSON ONLY with this schema:\n" +
             "{\n" +
-            '  \"routes\": [\n' +
-            "    {\n" +
-            '      \"name\": string,\n' +
-            '      \"type\": \"bank\" | \"remittance\" | \"exchange\" | \"p2p\" | \"other\",\n' +
-            '      \"isLoadit\": boolean,\n' +
-            '      \"isBest\": boolean,\n' +
-            '      \"feeUsd\": number,\n' +
-            '      \"feePercent\": number,\n' +
-            '      \"speed\": string,\n' +
-            '      \"notes\": string\n' +
-            "    }\n" +
-            "  ],\n" +
-            '  \"summary\": string\n' +
+            ' \"routes\": [\n' +
+            " {\n" +
+            ' \"name\": string,\n' +
+            ' \"type\": \"bank\" | \"remittance\" | \"exchange\" | \"p2p\" | \"other\",\n' +
+            ' \"isLoadit\": boolean,\n' +
+            ' \"isBest\": boolean,\n' +
+            ' \"feeUsd\": number,\n' +
+            ' \"feePercent\": number,\n' +
+            ' \"speed\": string,\n' +
+            ' \"notes\": string\n' +
+            " }\n" +
+            " ],\n" +
+            ' \"summary\": string\n' +
             "}\n\n" +
             "Rules:\n" +
             "- Do NOT mark any route as Loadit or LMS.\n" +
@@ -125,7 +125,7 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       return res.json({
         routes: [
           {
-            name: "Traditional Bank Transfer",
+            name: "Traditional Bank Wire Transfer",
             type: "bank",
             isLoadit: false,
             isBest: false,
@@ -320,7 +320,7 @@ app.post("/api/ai-routing-sim", async (req, res) => {
         type = "exchange"; // treat it as an on-chain/exchange-style rail
       }
 
-      // --- P2P / OTC crypto routes from AI (we'll filter these out after) ---
+      // --- P2P / OTC crypto routes from AI (we'll replace with our own card) ---
       const looksP2P =
         lowerType === "p2p" ||
         lowerName.includes("p2p") ||
@@ -390,28 +390,10 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       };
     });
 
-    // Strip any AI-created P2P routes so we only show ONE clear P2P card
+    // Strip AI-created P2P routes so we only show ONE clear P2P card we control
     const normalizedNonP2P = normalized.filter((r) => r.type !== "p2p");
 
-    // --- Synthetic Western Union + MoneyGram rails (legacy baselines) ---
-    const wuPct = 7.0;
-    const wuFeeUsd = money((wuPct / 100) * amount);
-    const wuRoute = {
-      name: "Western Union (Legacy Rail)",
-      type: "remittance",
-      isLoadit: false,
-      isBest: false,
-      feeUsd: wuFeeUsd,
-      feePercent: money(wuPct),
-      speed: "Minutes to a few hours",
-      notes:
-        "Traditional money transfer provider with high FX margins and service fees, often around 6–12% all-in.",
-      offRampLowUsd: null,
-      offRampMidUsd: null,
-      offRampHighUsd: null,
-      totalEstimatedCostUsd: wuFeeUsd,
-    };
-
+    // --- Synthetic MoneyGram rail (legacy baseline) ---
     const mgPct = 6.0;
     const mgFeeUsd = money((mgPct / 100) * amount);
     const mgRoute = {
@@ -465,7 +447,7 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       offRampLowUsd: lowP2PFeeUsd,
       offRampMidUsd: midP2PFeeUsd,
       offRampHighUsd: highP2PFeeUsd,
-      totalEstimatedCostUsd: money(midP2PFeeUsd + midP2PFeeUsd), // feeUsd is modeled as midP2PFeeUsd already, so fee + off-ramp ≈ 2x mid
+      totalEstimatedCostUsd: midP2PFeeUsd, // modeled as the core cost here
     };
 
     // --- LMS Rail (Loadit-only, 0.20% + $0.50 if ≤ $100) ---
@@ -493,7 +475,6 @@ app.post("/api/ai-routing-sim", async (req, res) => {
 
     const finalRoutes = [
       ...normalizedNonP2P,
-      wuRoute,
       mgRoute,
       p2pRoute,
       lmsRoute,
@@ -503,17 +484,4 @@ app.post("/api/ai-routing-sim", async (req, res) => {
       routes: finalRoutes,
       summary:
         parsed.summary ||
-        `AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the modern option that uses the cheapest digital-asset rails under the hood, but keeps the experience fiat-only on both sides with ~0.20% all-in platform fees (plus a small buffer on smaller transfers), and avoids the extra off-ramp/withdrawal and cash-out costs users would face with DIY stablecoin, exchange, or P2P/OTC crypto routes.`,
-    });
-  } catch (err) {
-    console.error("AI Routing Simulator (LMS-only) error:", err);
-    return res
-      .status(500)
-      .json({ error: "Failed to simulate routes with OpenAI." });
-  }
-});
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log("AERO LITE (AI + LMS-only) running on port", PORT);
-});
+        `AERO simulated multiple rails from ${from} to ${to}. LMS is modeled as the modern option that uses the cheapest digital-asset rails under the hood, but keeps the experience fiat-only on both side
